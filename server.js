@@ -96,7 +96,8 @@ const UserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   mobile: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  course: { type: String, required: true }
+  course: { type: String, required: true },
+  role: { type: String, default: 'student' }
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -216,7 +217,7 @@ app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToke
   }
 });
 
-// 🟢 FIX 2: Added `verifyToken` to protect student materials endpoint
+// 🟢 Protected student materials endpoint
 app.get('/api/materials/:course/:semester', checkDatabaseConnection, verifyToken, async (req, res) => {
   try {
     const { course, semester } = req.params;
@@ -275,7 +276,7 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Student & Admin Login
+// 🔑 Student Login Endpoint
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -289,9 +290,8 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
 
-    // 🟢 FIX 3: Automatic Super Admin Role Check
     const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE; 
-    const assignedRole = (SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE) ? 'admin' : 'student';
+    const assignedRole = (SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE) ? 'admin' : (user.role || 'student');
 
     const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
     const token = jwt.sign(
@@ -314,6 +314,48 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     });
   } catch (error) { 
     res.status(500).json({ message: 'Server error during login' }); 
+  }
+});
+
+// 👑 STRICT ADMIN LOGIN ENDPOINT (Only for Admin Panel)
+app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, res) => {
+  try {
+    let { mobile, password } = req.body;
+    if (typeof mobile !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ message: '🛑 Invalid input format!' });
+    }
+
+    const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE;
+
+    // 🔴 1. STRICT ADMIN CHECK: मोबाइल नंबर SUPER_ADMIN_MOBILE से मैच होना अनिवार्य है
+    if (!SUPER_ADMIN_MOBILE || mobile !== SUPER_ADMIN_MOBILE) {
+      return res.status(403).json({ 
+        message: '❌ You are not an admin! (आप एडमिन नहीं हैं)' 
+      });
+    }
+
+    const user = await User.findOne({ mobile });
+    if (!user) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
+
+    const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
+    const token = jwt.sign(
+      { userId: user._id, role: 'admin', mobile: user.mobile, course: user.course }, 
+      jwtSecret, 
+      { expiresIn: '12h' }
+    );
+
+    res.status(200).json({ 
+      message: 'Admin login successful!', 
+      name: user.name, 
+      mobile: user.mobile, 
+      role: 'admin', 
+      token: token 
+    });
+  } catch (error) { 
+    res.status(500).json({ message: 'Server error during admin login' }); 
   }
 });
 
