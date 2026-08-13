@@ -276,7 +276,7 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Student Login Endpoint
+// 🔑 Student / Normal Login Endpoint
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -317,7 +317,7 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
   }
 });
 
-// 👑 STRICT ADMIN LOGIN ENDPOINT (Only for Admin Panel)
+// 👑 STRICT ADMIN LOGIN ENDPOINT (Only for Admin Panel Login)
 app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -325,20 +325,22 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
       return res.status(400).json({ message: '🛑 Invalid input format!' });
     }
 
-    const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE;
-
-    // 🔴 1. STRICT ADMIN CHECK: मोबाइल नंबर SUPER_ADMIN_MOBILE से मैच होना अनिवार्य है
-    if (!SUPER_ADMIN_MOBILE || mobile !== SUPER_ADMIN_MOBILE) {
-      return res.status(403).json({ 
-        message: '❌ You are not an admin! (आप एडमिन नहीं हैं)' 
-      });
-    }
-
     const user = await User.findOne({ mobile });
     if (!user) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
+
+    const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE;
+    const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
+    const isAdminRole = user.role === 'admin';
+
+    // 🔴 STRICT CHECK: अगर यूजर Super Admin नहीं है और Database में भी Role 'admin' नहीं है
+    if (!isSuperAdmin && !isAdminRole) {
+      return res.status(403).json({ 
+        message: '❌ You are not an admin! (आप एडमिन नहीं हैं)' 
+      });
+    }
 
     const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
     const token = jwt.sign(
