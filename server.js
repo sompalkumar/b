@@ -267,7 +267,7 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
     if (userExists) return res.status(400).json({ message: 'This mobile number is already registered!' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ name, mobile, password: hashedPassword, course: course.toLowerCase() });
+    const newUser = new User({ name, mobile, password: hashedPassword, course: course.toLowerCase(), role: 'student' });
     await newUser.save();
 
     res.status(201).json({ message: 'Registration successful!' });
@@ -276,7 +276,7 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Student / Normal Login Endpoint
+// 🔑 Student / Normal Login Endpoint (STRICT STUDENT ONLY)
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -291,11 +291,19 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     if (!isMatch) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
 
     const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE; 
-    const assignedRole = (SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE) ? 'admin' : (user.role || 'student');
+    const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
+    const isAdminRole = user.role === 'admin' || isSuperAdmin;
+
+    // 🛑 अगर कोई एडमिन गलत स्टूडेंट पोर्टल से लॉगिन करने की कोशिश करे
+    if (isAdminRole) {
+      return res.status(403).json({ 
+        message: '⚠️ आप एक एडमिन हैं। कृपया Admin Tab चुनकर लॉग इन करें!' 
+      });
+    }
 
     const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
     const token = jwt.sign(
-      { userId: user._id, role: assignedRole, mobile: user.mobile, course: user.course }, 
+      { userId: user._id, role: 'student', mobile: user.mobile, course: user.course }, 
       jwtSecret, 
       { expiresIn: '12h' }
     );
@@ -307,7 +315,7 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
       message: 'Login successful!', 
       name: user.name, 
       mobile: user.mobile, 
-      role: assignedRole, 
+      role: 'student', 
       course: user.course || 'bca', 
       token: token, 
       logId: savedLog._id 
@@ -336,9 +344,10 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
     const isAdminRole = user.role === 'admin';
 
     // 🔴 STRICT CHECK: अगर यूजर Super Admin नहीं है और Database में भी Role 'admin' नहीं है
+    // तो यहाँ से ही 403 Forbidden रिस्पॉन्स देकर ब्लॉक कर दें!
     if (!isSuperAdmin && !isAdminRole) {
       return res.status(403).json({ 
-        message: '❌ You are not an admin! (आप एडमिन नहीं हैं)' 
+        message: '🛑 Access Denied! आप एडमिन नहीं हैं। स्टूडेंट एडमिन पोर्टल से लॉग इन नहीं कर सकते।' 
       });
     }
 
