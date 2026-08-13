@@ -20,16 +20,19 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json());
 app.use(cors());
 
-// Uploads फोल्डर अगर मौजूद नहीं है तो ऑटोमैटिक बना दें
+// Uploads Directory Setup
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
+// 🟢 FIX 1: Serve Static Files BEFORE Rate Limiter so PDF views don't hit rate limits
+app.use('/uploads', express.static(UPLOADS_DIR));
+
 // DDoS Attack Protection Limiters
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 150,
   message: { message: '🛑 Security Warning: Too many requests. Please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -38,13 +41,12 @@ const globalLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  message: { message: '🛑 Security Warning: Too many attempts. Please return after 15 minutes.' },
+  message: { message: '🛑 Security Warning: Too many login attempts. Please return after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 app.use(globalLimiter);
-app.use('/uploads', express.static(UPLOADS_DIR));
 
 // 🛡️ MongoDB Connection Setup
 const dbURI = process.env.MONGO_URI;
@@ -120,7 +122,6 @@ const Material = mongoose.model('Material', MaterialSchema);
 // In-Memory OTP Store with Expiry Management
 const otpStore = new Map();
 
-// Helper: Delete OTP after 10 minutes
 const setOtpWithExpiry = (mobile, otp) => {
   otpStore.set(mobile, otp);
   setTimeout(() => otpStore.delete(mobile), 10 * 60 * 1000);
@@ -130,7 +131,6 @@ const setOtpWithExpiry = (mobile, otp) => {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
-    // Filename sanitization (removes spaces & dangerous chars)
     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
     cb(null, `${Date.now()}-${sanitizedName}`);
   }
@@ -191,7 +191,7 @@ app.get('/api/admin/materials', checkDatabaseConnection, verifyToken, verifyAdmi
   }
 });
 
-// 🗑️ Admin Delete Material (Clean Async Unlink)
+// 🗑️ Admin Delete Material
 app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const materialId = req.params.id;
@@ -201,7 +201,6 @@ app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToke
     const filename = path.basename(material.fileUrl);
     const filePath = path.join(UPLOADS_DIR, filename);
 
-    // Modern Promises-based File Unlink
     try {
       if (fs.existsSync(filePath)) {
         await fs.promises.unlink(filePath);
@@ -217,8 +216,8 @@ app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToke
   }
 });
 
-// 📚 Student Get Materials
-app.get('/api/materials/:course/:semester', checkDatabaseConnection, async (req, res) => {
+// 🟢 FIX 2: Added `verifyToken` to protect student materials endpoint
+app.get('/api/materials/:course/:semester', checkDatabaseConnection, verifyToken, async (req, res) => {
   try {
     const { course, semester } = req.params;
     const materials = await Material.find({ course: course.toLowerCase(), semester });
@@ -279,14 +278,9 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
 // 🔑 Student & Admin Login
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
-    let { mobile, password, role } = req.body;
+    let { mobile, password } = req.body;
     if (typeof mobile !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ message: '🛑 Invalid input format!' });
-    }
-
-    const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE; 
-    if (role === 'admin' && mobile !== SUPER_ADMIN_MOBILE) {
-      return res.status(403).json({ message: '🛑 Access denied! Not authorized as Admin.' });
     }
 
     const user = await User.findOne({ mobile });
@@ -295,9 +289,13 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Incorrect mobile number or password!' });
 
+    // 🟢 FIX 3: Automatic Super Admin Role Check
+    const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE; 
+    const assignedRole = (SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE) ? 'admin' : 'student';
+
     const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
     const token = jwt.sign(
-      { userId: user._id, role: role || 'student', mobile: user.mobile, course: user.course }, 
+      { userId: user._id, role: assignedRole, mobile: user.mobile, course: user.course }, 
       jwtSecret, 
       { expiresIn: '12h' }
     );
@@ -309,7 +307,7 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
       message: 'Login successful!', 
       name: user.name, 
       mobile: user.mobile, 
-      role: role || 'student', 
+      role: assignedRole, 
       course: user.course || 'bca', 
       token: token, 
       logId: savedLog._id 
