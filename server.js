@@ -10,7 +10,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 
-
+const app = express();
 
 // 🛡️ Proxy support for Render/Heroku (Fixes Rate Limit & HTTPS detection)
 app.set('trust proxy', 1);
