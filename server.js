@@ -110,12 +110,14 @@ const LogSchema = new mongoose.Schema({
 });
 const Log = mongoose.model('Log', LogSchema);
 
+// 🟢 Schema Updated (driveUrl Option Added Safely)
 const MaterialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   course: { type: String, required: true },
   semester: { type: String, required: true },
-  fileUrl: { type: String, required: true },
-  fileType: { type: String, required: true }, 
+  fileUrl: { type: String, default: '' }, // File path OR Google Drive Link
+  driveUrl: { type: String, default: '' },
+  fileType: { type: String, default: 'pdf' }, 
   uploadedAt: { type: Date, default: Date.now }
 });
 const Material = mongoose.model('Material', MaterialSchema);
@@ -161,19 +163,44 @@ const isPasswordStrong = (password) => {
 
 // ==================== REST APIs ====================
 
-// 📤 Protected Study Material Upload (Admin Only)
+// 📤 Protected Study Material Upload (Admin Only) - FLEXIBLE FOR FILE & DRIVE LINK
 app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdmin, (req, res) => {
   upload.single('pdfFile')(req, res, async (err) => {
     if (err) return res.status(400).json({ message: err.message });
     try {
-      const { title, course, semester } = req.body;
-      if (!req.file) return res.status(400).json({ message: 'Please select a valid file!' });
-      
-      const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-      const ext = path.extname(req.file.filename).toLowerCase();
-      const fileType = ext === '.pdf' ? 'pdf' : 'image';
+      const { title, course, semester, driveUrl } = req.body;
 
-      const newMaterial = new Material({ title, course: course.toLowerCase(), semester, fileUrl, fileType });
+      // 🛡️ Strict Dual Validation Check: Agar Local File aur Drive Link DONO missing hain tabhi error milega
+      if (!req.file && (!driveUrl || driveUrl.trim() === '')) {
+        return res.status(400).json({ message: 'Please upload a file OR provide a Google Drive link!' });
+      }
+
+      let fileUrl = '';
+      let fileType = 'pdf';
+
+      if (req.file) {
+        fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+        const ext = path.extname(req.file.filename).toLowerCase();
+        fileType = ext === '.pdf' ? 'pdf' : 'image';
+      } else if (driveUrl) {
+        // Drive Link sanitization and preview format check
+        let formattedDriveUrl = driveUrl.trim();
+        if (formattedDriveUrl.includes('drive.google.com') && formattedDriveUrl.includes('/view')) {
+          formattedDriveUrl = formattedDriveUrl.replace(/\/view.*$/, '/preview');
+        }
+        fileUrl = formattedDriveUrl;
+        driveUrlFormatted = formattedDriveUrl;
+      }
+
+      const newMaterial = new Material({ 
+        title, 
+        course: course.toLowerCase(), 
+        semester, 
+        fileUrl, 
+        driveUrl: driveUrl || fileUrl, 
+        fileType 
+      });
+
       await newMaterial.save();
       res.status(201).json({ message: '🚀 Study material uploaded successfully!' });
     } catch (error) { 
@@ -199,19 +226,21 @@ app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToke
     const material = await Material.findById(materialId);
     if (!material) return res.status(404).json({ message: 'File record not found!' });
 
-    const filename = path.basename(material.fileUrl);
-    const filePath = path.join(UPLOADS_DIR, filename);
+    if (material.fileUrl && material.fileUrl.includes('/uploads/')) {
+      const filename = path.basename(material.fileUrl);
+      const filePath = path.join(UPLOADS_DIR, filename);
 
-    try {
-      if (fs.existsSync(filePath)) {
-        await fs.promises.unlink(filePath);
+      try {
+        if (fs.existsSync(filePath)) {
+          await fs.promises.unlink(filePath);
+        }
+      } catch (fileErr) {
+        console.error('File removal error from disk:', fileErr.message);
       }
-    } catch (fileErr) {
-      console.error('File removal error from disk:', fileErr.message);
     }
 
     await Material.findByIdAndDelete(materialId);
-    res.status(200).json({ message: '🗑️ Deleted from server disk and database!' });
+    res.status(200).json({ message: '🗑️ Deleted successfully!' });
   } catch (error) { 
     res.status(500).json({ message: 'Server error during deletion' }); 
   }
@@ -294,7 +323,6 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
     const isAdminRole = user.role === 'admin' || isSuperAdmin;
 
-    // 🛑 अगर कोई एडमिन गलत स्टूडेंट पोर्टल से लॉगिन करने की कोशिश करे
     if (isAdminRole) {
       return res.status(403).json({ 
         message: '⚠️ आप एक एडमिन हैं। कृपया Admin Tab चुनकर लॉग इन करें!' 
@@ -343,8 +371,6 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
     const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
     const isAdminRole = user.role === 'admin';
 
-    // 🔴 STRICT CHECK: अगर यूजर Super Admin नहीं है और Database में भी Role 'admin' नहीं है
-    // तो यहाँ से ही 403 Forbidden रिस्पॉन्स देकर ब्लॉक कर दें!
     if (!isSuperAdmin && !isAdminRole) {
       return res.status(403).json({ 
         message: '🛑 Access Denied! आप एडमिन नहीं हैं। स्टूडेंट एडमिन पोर्टल से लॉग इन नहीं कर सकते।' 
