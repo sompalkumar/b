@@ -84,7 +84,7 @@ const verifyToken = (req, res, next) => {
 };
 
 const verifyAdmin = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && String(req.user.role).toLowerCase() === 'admin') {
     next();
   } else {
     res.status(403).json({ message: '🛑 Access Denied! Admin Privileges Required.' });
@@ -189,7 +189,6 @@ app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdm
           formattedDriveUrl = formattedDriveUrl.replace(/\/view.*$/, '/preview');
         }
         fileUrl = formattedDriveUrl;
-        driveUrlFormatted = formattedDriveUrl;
       }
 
       const newMaterial = new Material({ 
@@ -321,7 +320,8 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
 
     const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE; 
     const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
-    const isAdminRole = user.role === 'admin' || isSuperAdmin;
+    const userRoleClean = String(user.role || '').toLowerCase().trim();
+    const isAdminRole = userRoleClean === 'admin' || isSuperAdmin;
 
     if (isAdminRole) {
       return res.status(403).json({ 
@@ -369,7 +369,8 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
 
     const SUPER_ADMIN_MOBILE = process.env.SUPER_ADMIN_MOBILE;
     const isSuperAdmin = SUPER_ADMIN_MOBILE && mobile === SUPER_ADMIN_MOBILE;
-    const isAdminRole = user.role === 'admin';
+    const userRoleClean = String(user.role || '').toLowerCase().trim();
+    const isAdminRole = userRoleClean === 'admin';
 
     if (!isSuperAdmin && !isAdminRole) {
       return res.status(403).json({ 
