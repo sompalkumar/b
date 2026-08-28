@@ -26,7 +26,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// 🟢 FIX 1: Serve Static Files BEFORE Rate Limiter so PDF views don't hit rate limits
+// 🟢 Serve Static Files BEFORE Rate Limiter so PDF views don't hit rate limits
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // DDoS Attack Protection Limiters
@@ -110,12 +110,11 @@ const LogSchema = new mongoose.Schema({
 });
 const Log = mongoose.model('Log', LogSchema);
 
-// 🟢 Schema Updated (driveUrl Option Added Safely)
 const MaterialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   course: { type: String, required: true },
   semester: { type: String, required: true },
-  fileUrl: { type: String, default: '' }, // File path OR Google Drive Link
+  fileUrl: { type: String, default: '' },
   driveUrl: { type: String, default: '' },
   fileType: { type: String, default: 'pdf' }, 
   uploadedAt: { type: Date, default: Date.now }
@@ -163,14 +162,13 @@ const isPasswordStrong = (password) => {
 
 // ==================== REST APIs ====================
 
-// 📤 Protected Study Material Upload (Admin Only) - FLEXIBLE FOR FILE & DRIVE LINK
+// 📤 Protected Study Material Upload (Admin Only)
 app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdmin, (req, res) => {
   upload.single('pdfFile')(req, res, async (err) => {
     if (err) return res.status(400).json({ message: err.message });
     try {
       const { title, course, semester, driveUrl } = req.body;
 
-      // 🛡️ Strict Dual Validation Check: Agar Local File aur Drive Link DONO missing hain tabhi error milega
       if (!req.file && (!driveUrl || driveUrl.trim() === '')) {
         return res.status(400).json({ message: 'Please upload a file OR provide a Google Drive link!' });
       }
@@ -183,7 +181,6 @@ app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdm
         const ext = path.extname(req.file.filename).toLowerCase();
         fileType = ext === '.pdf' ? 'pdf' : 'image';
       } else if (driveUrl) {
-        // Drive Link sanitization and preview format check
         let formattedDriveUrl = driveUrl.trim();
         if (formattedDriveUrl.includes('drive.google.com') && formattedDriveUrl.includes('/view')) {
           formattedDriveUrl = formattedDriveUrl.replace(/\/view.*$/, '/preview');
@@ -304,7 +301,7 @@ app.post('/api/register', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Student / Normal Login Endpoint (STRICT STUDENT ONLY)
+// 🔑 Student / Normal Login Endpoint
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -353,7 +350,7 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
   }
 });
 
-// 👑 STRICT ADMIN LOGIN ENDPOINT (Only for Admin Panel Login)
+// 👑 STRICT ADMIN LOGIN ENDPOINT
 app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
