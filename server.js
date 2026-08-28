@@ -12,13 +12,20 @@ const fs = require('fs');
 
 const app = express();
 
-// 🛡️ Proxy support for Render/Heroku (Fixes Rate Limit & HTTPS detection)
+// Proxy support for Render/Heroku
 app.set('trust proxy', 1);
 
 // Middlewares
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json());
-app.use(cors());
+
+// Dynamic CORS Configuration (Vercel, Render and Localhost support)
+app.use(cors({
+  origin: true, // Allow all incoming origins dynamically or list specifically
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Uploads Directory Setup
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -26,10 +33,10 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// 🟢 Serve Static Files BEFORE Rate Limiter so PDF views don't hit rate limits
+// Serve Static Files BEFORE Rate Limiter
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// DDoS Attack Protection Limiters
+// DDoS Protection Limiters
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 150,
@@ -40,7 +47,7 @@ const globalLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 30, // Increased limit slightly to prevent false positive blocks
   message: { message: '🛑 Security Warning: Too many login attempts. Please return after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -48,7 +55,7 @@ const authLimiter = rateLimit({
 
 app.use(globalLimiter);
 
-// 🛡️ MongoDB Connection Setup
+// MongoDB Connection Setup
 const dbURI = process.env.MONGO_URI;
 
 if (!dbURI) {
@@ -59,7 +66,7 @@ if (!dbURI) {
     .catch(err => console.log('🛑 MongoDB connection failed:', err.message));
 }
 
-// Check Dynamic Database Connection
+// Check Database Connection Middleware
 const checkDatabaseConnection = (req, res, next) => {
   if (mongoose.connection.readyState !== 1) {
     return res.status(503).json({ 
@@ -121,15 +128,14 @@ const MaterialSchema = new mongoose.Schema({
 });
 const Material = mongoose.model('Material', MaterialSchema);
 
-// In-Memory OTP Store with Expiry Management
+// In-Memory OTP Store
 const otpStore = new Map();
-
 const setOtpWithExpiry = (mobile, otp) => {
   otpStore.set(mobile, otp);
   setTimeout(() => otpStore.delete(mobile), 10 * 60 * 1000);
 };
 
-// ==================== Multer Storage Setup ====================
+// Multer Storage Setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
@@ -162,146 +168,7 @@ const isPasswordStrong = (password) => {
 
 // ==================== REST APIs ====================
 
-// 📤 Protected Study Material Upload (Admin Only)
-app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdmin, (req, res) => {
-  upload.single('pdfFile')(req, res, async (err) => {
-    if (err) return res.status(400).json({ message: err.message });
-    try {
-      const { title, course, semester, driveUrl } = req.body;
-
-      if (!req.file && (!driveUrl || driveUrl.trim() === '')) {
-        return res.status(400).json({ message: 'Please upload a file OR provide a Google Drive link!' });
-      }
-
-      let fileUrl = '';
-      let fileType = 'pdf';
-
-      if (req.file) {
-        fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-        const ext = path.extname(req.file.filename).toLowerCase();
-        fileType = ext === '.pdf' ? 'pdf' : 'image';
-      } else if (driveUrl) {
-        let formattedDriveUrl = driveUrl.trim();
-        if (formattedDriveUrl.includes('drive.google.com') && formattedDriveUrl.includes('/view')) {
-          formattedDriveUrl = formattedDriveUrl.replace(/\/view.*$/, '/preview');
-        }
-        fileUrl = formattedDriveUrl;
-      }
-
-      const newMaterial = new Material({ 
-        title, 
-        course: course.toLowerCase(), 
-        semester, 
-        fileUrl, 
-        driveUrl: driveUrl || fileUrl, 
-        fileType 
-      });
-
-      await newMaterial.save();
-      res.status(201).json({ message: '🚀 Study material uploaded successfully!' });
-    } catch (error) { 
-      res.status(500).json({ message: 'Server glitch during upload' }); 
-    }
-  });
-});
-
-// 🔒 Admin Get All Materials
-app.get('/api/admin/materials', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const materials = await Material.find().sort({ uploadedAt: -1 });
-    res.json(materials);
-  } catch (error) { 
-    res.status(500).json({ message: 'Error fetching materials' }); 
-  }
-});
-
-// 🗑️ Admin Delete Material
-app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const materialId = req.params.id;
-    const material = await Material.findById(materialId);
-    if (!material) return res.status(404).json({ message: 'File record not found!' });
-
-    if (material.fileUrl && material.fileUrl.includes('/uploads/')) {
-      const filename = path.basename(material.fileUrl);
-      const filePath = path.join(UPLOADS_DIR, filename);
-
-      try {
-        if (fs.existsSync(filePath)) {
-          await fs.promises.unlink(filePath);
-        }
-      } catch (fileErr) {
-        console.error('File removal error from disk:', fileErr.message);
-      }
-    }
-
-    await Material.findByIdAndDelete(materialId);
-    res.status(200).json({ message: '🗑️ Deleted successfully!' });
-  } catch (error) { 
-    res.status(500).json({ message: 'Server error during deletion' }); 
-  }
-});
-
-// 🟢 Protected student materials endpoint
-app.get('/api/materials/:course/:semester', checkDatabaseConnection, verifyToken, async (req, res) => {
-  try {
-    const { course, semester } = req.params;
-    const materials = await Material.find({ course: course.toLowerCase(), semester });
-    res.json(materials);
-  } catch (error) { 
-    res.status(500).json({ message: 'Data fetch error' }); 
-  }
-});
-
-// 🔒 Admin Get Student Logs
-app.get('/api/admin/logs', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const logs = await Log.find().sort({ loginTime: -1 });
-    res.json(logs);
-  } catch (error) { 
-    res.status(500).json({ message: 'Logs fetch error' }); 
-  }
-});
-
-// 🔒 Admin Logout All Users
-app.post('/api/admin/logout-all', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const currentTime = new Date();
-    await Log.updateMany(
-      { logoutTime: { $exists: false } }, 
-      { $set: { logoutTime: currentTime, durationInSeconds: 0 } }
-    );
-    res.status(200).json({ message: '🚀 All students logged out successfully!' });
-  } catch (error) { 
-    res.status(500).json({ message: 'Server error during logout-all' }); 
-  }
-});
-
-// 📝 Student Registration
-app.post('/api/register', checkDatabaseConnection, async (req, res) => {
-  try {
-    const { name, mobile, password, course } = req.body;
-    if (typeof mobile !== 'string' || typeof password !== 'string' || typeof course !== 'string') {
-      return res.status(400).json({ message: '🛑 Invalid input format!' });
-    }
-    if (!isPasswordStrong(password)) {
-      return res.status(400).json({ message: '🛑 Password must contain 8+ chars, 1 uppercase, 1 lowercase, 1 number, & 1 special char.' });
-    }
-
-    const userExists = await User.findOne({ mobile });
-    if (userExists) return res.status(400).json({ message: 'This mobile number is already registered!' });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ name, mobile, password: hashedPassword, course: course.toLowerCase(), role: 'student' });
-    await newUser.save();
-
-    res.status(201).json({ message: 'Registration successful!' });
-  } catch (error) { 
-    res.status(500).json({ message: 'Server error during registration' }); 
-  }
-});
-
-// 🔑 Student / Normal Login Endpoint
+// 🔑 FIXED COMBINED LOGIN ENDPOINT
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -320,13 +187,26 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
     const userRoleClean = String(user.role || '').toLowerCase().trim();
     const isAdminRole = userRoleClean === 'admin' || isSuperAdmin;
 
+    const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
+
+    // FIX: If admin logs in via standard login route, grant admin access directly instead of throwing 403
     if (isAdminRole) {
-      return res.status(403).json({ 
-        message: '⚠️ आप एक एडमिन हैं। कृपया Admin Tab चुनकर लॉग इन करें!' 
+      const token = jwt.sign(
+        { userId: user._id, role: 'admin', mobile: user.mobile, course: user.course }, 
+        jwtSecret, 
+        { expiresIn: '12h' }
+      );
+
+      return res.status(200).json({ 
+        message: 'Admin login successful!', 
+        name: user.name, 
+        mobile: user.mobile, 
+        role: 'admin', 
+        token: token 
       });
     }
 
-    const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_key';
+    // Student Token & Log
     const token = jwt.sign(
       { userId: user._id, role: 'student', mobile: user.mobile, course: user.course }, 
       jwtSecret, 
@@ -371,7 +251,7 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
 
     if (!isSuperAdmin && !isAdminRole) {
       return res.status(403).json({ 
-        message: '🛑 Access Denied! आप एडमिन नहीं हैं। स्टूडेंट एडमिन पोर्टल से लॉग इन नहीं कर सकते।' 
+        message: '🛑 Access Denied! You are not an admin.' 
       });
     }
 
@@ -394,7 +274,146 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
   }
 });
 
-// 🚪 User Logout
+// 📤 Upload Material
+app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdmin, (req, res) => {
+  upload.single('pdfFile')(req, res, async (err) => {
+    if (err) return res.status(400).json({ message: err.message });
+    try {
+      const { title, course, semester, driveUrl } = req.body;
+
+      if (!req.file && (!driveUrl || driveUrl.trim() === '')) {
+        return res.status(400).json({ message: 'Please upload a file OR provide a Google Drive link!' });
+      }
+
+      let fileUrl = '';
+      let fileType = 'pdf';
+
+      if (req.file) {
+        fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+        const ext = path.extname(req.file.filename).toLowerCase();
+        fileType = ext === '.pdf' ? 'pdf' : 'image';
+      } else if (driveUrl) {
+        let formattedDriveUrl = driveUrl.trim();
+        if (formattedDriveUrl.includes('drive.google.com') && formattedDriveUrl.includes('/view')) {
+          formattedDriveUrl = formattedDriveUrl.replace(/\/view.*$/, '/preview');
+        }
+        fileUrl = formattedDriveUrl;
+      }
+
+      const newMaterial = new Material({ 
+        title, 
+        course: course.toLowerCase(), 
+        semester, 
+        fileUrl, 
+        driveUrl: driveUrl || fileUrl, 
+        fileType 
+      });
+
+      await newMaterial.save();
+      res.status(201).json({ message: '🚀 Study material uploaded successfully!' });
+    } catch (error) { 
+      res.status(500).json({ message: 'Server glitch during upload' }); 
+    }
+  });
+});
+
+// Admin Get All Materials
+app.get('/api/admin/materials', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const materials = await Material.find().sort({ uploadedAt: -1 });
+    res.json(materials);
+  } catch (error) { 
+    res.status(500).json({ message: 'Error fetching materials' }); 
+  }
+});
+
+// Admin Delete Material
+app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const materialId = req.params.id;
+    const material = await Material.findById(materialId);
+    if (!material) return res.status(404).json({ message: 'File record not found!' });
+
+    if (material.fileUrl && material.fileUrl.includes('/uploads/')) {
+      const filename = path.basename(material.fileUrl);
+      const filePath = path.join(UPLOADS_DIR, filename);
+
+      try {
+        if (fs.existsSync(filePath)) {
+          await fs.promises.unlink(filePath);
+        }
+      } catch (fileErr) {
+        console.error('File removal error from disk:', fileErr.message);
+      }
+    }
+
+    await Material.findByIdAndDelete(materialId);
+    res.status(200).json({ message: '🗑️ Deleted successfully!' });
+  } catch (error) { 
+    res.status(500).json({ message: 'Server error during deletion' }); 
+  }
+});
+
+// Student Materials Endpoint
+app.get('/api/materials/:course/:semester', checkDatabaseConnection, verifyToken, async (req, res) => {
+  try {
+    const { course, semester } = req.params;
+    const materials = await Material.find({ course: course.toLowerCase(), semester });
+    res.json(materials);
+  } catch (error) { 
+    res.status(500).json({ message: 'Data fetch error' }); 
+  }
+});
+
+// Admin Get Student Logs
+app.get('/api/admin/logs', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const logs = await Log.find().sort({ loginTime: -1 });
+    res.json(logs);
+  } catch (error) { 
+    res.status(500).json({ message: 'Logs fetch error' }); 
+  }
+});
+
+// Admin Logout All Users
+app.post('/api/admin/logout-all', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const currentTime = new Date();
+    await Log.updateMany(
+      { logoutTime: { $exists: false } }, 
+      { $set: { logoutTime: currentTime, durationInSeconds: 0 } }
+    );
+    res.status(200).json({ message: '🚀 All students logged out successfully!' });
+  } catch (error) { 
+    res.status(500).json({ message: 'Server error during logout-all' }); 
+  }
+});
+
+// Student Registration
+app.post('/api/register', checkDatabaseConnection, async (req, res) => {
+  try {
+    const { name, mobile, password, course } = req.body;
+    if (typeof mobile !== 'string' || typeof password !== 'string' || typeof course !== 'string') {
+      return res.status(400).json({ message: '🛑 Invalid input format!' });
+    }
+    if (!isPasswordStrong(password)) {
+      return res.status(400).json({ message: '🛑 Password must contain 8+ chars, 1 uppercase, 1 lowercase, 1 number, & 1 special char.' });
+    }
+
+    const userExists = await User.findOne({ mobile });
+    if (userExists) return res.status(400).json({ message: 'This mobile number is already registered!' });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ name, mobile, password: hashedPassword, course: course.toLowerCase(), role: 'student' });
+    await newUser.save();
+
+    res.status(201).json({ message: 'Registration successful!' });
+  } catch (error) { 
+    res.status(500).json({ message: 'Server error during registration' }); 
+  }
+});
+
+// User Logout
 app.post('/api/logout', checkDatabaseConnection, async (req, res) => {
   try {
     const { logId } = req.body;
@@ -415,7 +434,7 @@ app.post('/api/logout', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Send OTP for Forgot Password
+// Send OTP
 app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     const { mobile } = req.body;
@@ -432,7 +451,7 @@ app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res)
   }
 });
 
-// 🔄 Verify OTP & Reset Password
+// Verify OTP & Reset Password
 app.post('/api/verify-otp-reset', checkDatabaseConnection, async (req, res) => {
   try {
     const { mobile, otp, newPassword } = req.body;
