@@ -59,8 +59,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Pre-flight OPTIONS Requests
-app.options('*', cors());
+// Pre-flight OPTIONS Requests (Fixed path matching for modern Express / path-to-regexp)
+app.options(/(.*)/, cors());
 
 // Uploads Directory Setup
 const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
