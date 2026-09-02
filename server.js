@@ -23,7 +23,6 @@ if (!process.env.MONGO_URI) {
 }
 const JWT_SECRET = process.env.JWT_SECRET;
 
-
 const app = express();
 
 // Proxy support for Render/Heroku
@@ -39,7 +38,8 @@ app.use(mongoSanitize());
 // Restricted CORS — only allow known frontend origins
 const ALLOWED_ORIGINS = [
   'https://bca-35ms.onrender.com',       // Backend itself (if self-referencing)
-  'https://bca-easy-lms.vercel.app',    // Production Vercel frontend
+  'https://bcaeasylearn.vercel.app',    // Exact Production Frontend Domain
+  'https://bca-easy-lms.vercel.app',    // Additional Vercel domain
   'https://bca-easy-lms.netlify.app',   // Netlify frontend (if applicable)
   'http://localhost:5173',              // Local Vite dev server
   'http://localhost:4173',              // Local Vite preview
@@ -58,6 +58,9 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Pre-flight OPTIONS Requests
+app.options('*', cors());
 
 // Uploads Directory Setup
 const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
@@ -165,7 +168,6 @@ const Material = mongoose.model('Material', MaterialSchema);
 // ==================== In-Memory OTP Store (with timer tracking) ====================
 const otpStore = new Map();
 const setOtpWithExpiry = (mobile, otp) => {
-  // Cancel any existing timer for this mobile to prevent timer leaks
   if (otpStore.has(mobile)) {
     clearTimeout(otpStore.get(mobile).timer);
   }
@@ -176,7 +178,6 @@ const getStoredOtp = (mobile) => {
   const entry = otpStore.get(mobile);
   return entry ? entry.otp : null;
 };
-
 
 // Multer Storage Setup
 const storage = multer.diskStorage({
@@ -415,7 +416,6 @@ app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToke
       const filename = path.basename(material.fileUrl);
       const resolvedPath = path.resolve(UPLOADS_DIR, filename);
 
-      // Verify file is inside UPLOADS_DIR
       if (resolvedPath.startsWith(UPLOADS_DIR + path.sep) || resolvedPath === UPLOADS_DIR) {
         try {
           if (fs.existsSync(resolvedPath)) {
@@ -552,12 +552,9 @@ app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res)
     const user = await User.findOne({ mobile });
     if (!user) return res.status(404).json({ message: 'This mobile number is not registered!' });
 
-    // Cryptographically secure 6-digit OTP
     const otp = crypto.randomInt(100000, 999999).toString();
     setOtpWithExpiry(mobile, otp);
 
-    // NOTE: Integrate an SMS provider (e.g., Twilio) here for production OTP delivery.
-    // In development mode only, OTP is logged for testing purposes.
     if (process.env.NODE_ENV !== 'production') {
       console.log(`[DEV ONLY] OTP for ${mobile}: ${otp}`);
     }
@@ -569,7 +566,7 @@ app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res)
   }
 });
 
-// ✅ Verify OTP & Reset Password (rate-limited to prevent brute-force)
+// ✅ Verify OTP & Reset Password
 app.post('/api/verify-otp-reset', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     const { mobile, otp, newPassword } = req.body;
@@ -590,7 +587,6 @@ app.post('/api/verify-otp-reset', authLimiter, checkDatabaseConnection, async (r
     const hashedPassword = await bcrypt.hash(newPassword, 12);
     await User.findOneAndUpdate({ mobile }, { password: hashedPassword });
 
-    // Cancel timer and remove OTP after successful use
     const entry = otpStore.get(mobile);
     if (entry) {
       clearTimeout(entry.timer);
