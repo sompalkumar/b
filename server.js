@@ -32,8 +32,13 @@ app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json());
 
-// NoSQL Injection Prevention — sanitizes req.body, req.params, req.query
-app.use(mongoSanitize());
+// Express 5 / Node 24 Safe NoSQL Injection Prevention
+app.use((req, res, next) => {
+  if (req.body) mongoSanitize.sanitize(req.body);
+  if (req.params) mongoSanitize.sanitize(req.params);
+  if (req.query) mongoSanitize.sanitize(req.query);
+  next();
+});
 
 // Restricted CORS — only allow known frontend origins
 const ALLOWED_ORIGINS = [
