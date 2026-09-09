@@ -410,6 +410,48 @@ app.get('/api/admin/materials', checkDatabaseConnection, verifyToken, verifyAdmi
   }
 });
 
+// ✏️ Admin Edit/Update Material (NEWLY ADDED FIX)
+app.put('/api/admin/edit-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, course, semester, category, driveUrl, question, options, correctOption } = req.body;
+
+    const material = await Material.findById(id);
+    if (!material) {
+      return res.status(404).json({ message: 'Material record not found!' });
+    }
+
+    // Fields Update Logic
+    if (title !== undefined) material.title = title.trim();
+    if (course !== undefined) material.course = course.toLowerCase();
+    if (semester !== undefined) material.semester = semester;
+    if (category !== undefined) material.category = category;
+
+    if (driveUrl !== undefined) {
+      let formattedUrl = driveUrl.trim();
+      if (formattedUrl.includes('drive.google.com') && formattedUrl.includes('/view')) {
+        formattedUrl = formattedUrl.replace(/\/view.*$/, '/preview');
+      }
+      material.driveUrl = formattedUrl;
+      if (!material.fileUrl) material.fileUrl = formattedUrl;
+    }
+
+    if (material.category === 'quiz') {
+      if (question !== undefined) material.question = question;
+      if (options !== undefined) {
+        material.options = typeof options === 'string' ? JSON.parse(options) : options;
+      }
+      if (correctOption !== undefined) material.correctOption = correctOption;
+    }
+
+    await material.save();
+    res.status(200).json({ message: '✅ Material updated successfully!', data: material });
+  } catch (error) {
+    console.error('Update material error:', error.message);
+    res.status(500).json({ message: 'Server error during material update' });
+  }
+});
+
 // Admin Delete Material (Path Traversal Hardened)
 app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
