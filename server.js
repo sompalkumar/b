@@ -11,6 +11,7 @@ const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const crypto = require('crypto');
 const mongoSanitize = require('express-mongo-sanitize');
+const https = require('https'); // 🟢 Added for Self-Ping Keep-Alive
 
 // ==================== Critical Environment Validation ====================
 if (!process.env.JWT_SECRET) {
@@ -42,10 +43,10 @@ app.use((req, res, next) => {
 
 // Restricted CORS — only allow known frontend origins
 const ALLOWED_ORIGINS = [
-  'https://bca-35ms.onrender.com',       // Backend itself (if self-referencing)
+  'https://bca-35ms.onrender.com',       // Backend itself
   'https://bcaeasylearn.vercel.app',    // Exact Production Frontend Domain
   'https://bca-easy-lms.vercel.app',    // Additional Vercel domain
-  'https://bca-easy-lms.netlify.app',   // Netlify frontend (if applicable)
+  'https://bca-easy-lms.netlify.app',   // Netlify frontend
   'http://localhost:5173',              // Local Vite dev server
   'http://localhost:4173',              // Local Vite preview
   'http://localhost:3000'               // Alternative local dev
@@ -64,7 +65,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Pre-flight OPTIONS Requests (Fixed path matching for modern Express / path-to-regexp)
+// Pre-flight OPTIONS Requests
 app.options(/(.*)/, cors());
 
 // Uploads Directory Setup
@@ -75,6 +76,15 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 
 // Serve Static Files BEFORE Rate Limiter
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// 🟢 HEALTH CHECK ROUTE (Rate Limiter se pehle taaki ping block na ho)
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'active', 
+    message: 'Server is healthy and running', 
+    timestamp: new Date().toISOString() 
+  });
+});
 
 // DDoS Protection Limiters
 const globalLimiter = rateLimit({
@@ -154,7 +164,6 @@ const LogSchema = new mongoose.Schema({
 });
 const Log = mongoose.model('Log', LogSchema);
 
-// Fixed: Added category, question, options, correctOption for full Quiz support
 const MaterialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   course: { type: String, required: true },
@@ -170,13 +179,13 @@ const MaterialSchema = new mongoose.Schema({
 });
 const Material = mongoose.model('Material', MaterialSchema);
 
-// ==================== In-Memory OTP Store (with timer tracking) ====================
+// ==================== In-Memory OTP Store ====================
 const otpStore = new Map();
 const setOtpWithExpiry = (mobile, otp) => {
   if (otpStore.has(mobile)) {
     clearTimeout(otpStore.get(mobile).timer);
   }
-  const timer = setTimeout(() => otpStore.delete(mobile), 10 * 60 * 1000); // 10 min
+  const timer = setTimeout(() => otpStore.delete(mobile), 10 * 60 * 1000);
   otpStore.set(mobile, { otp, timer });
 };
 const getStoredOtp = (mobile) => {
@@ -217,7 +226,7 @@ const isPasswordStrong = (password) => {
 
 // ==================== REST APIs ====================
 
-// 🔑 FIXED COMBINED LOGIN ENDPOINT
+// 🔑 Login Endpoint
 app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     let { mobile, password } = req.body;
@@ -251,7 +260,6 @@ app.post('/api/login', authLimiter, checkDatabaseConnection, async (req, res) =>
       });
     }
 
-    // Student Token & Log
     const token = jwt.sign(
       { userId: user._id, role: 'student', mobile: user.mobile, course: user.course },
       JWT_SECRET,
@@ -317,7 +325,7 @@ app.post('/api/admin-login', authLimiter, checkDatabaseConnection, async (req, r
   }
 });
 
-// 📤 Upload Material (Admin Only)
+// 📤 Upload Material
 app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdmin, (req, res) => {
   upload.single('pdfFile')(req, res, async (err) => {
     if (err) return res.status(400).json({ message: err.message });
@@ -330,7 +338,6 @@ app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdm
 
       const materialCategory = category || 'notes';
 
-      // Quiz handling
       if (materialCategory === 'quiz') {
         if (!question || typeof question !== 'string' || !question.trim()) {
           return res.status(400).json({ message: 'Quiz question is required!' });
@@ -359,7 +366,6 @@ app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdm
         return res.status(201).json({ message: '🚀 Quiz uploaded successfully!' });
       }
 
-      // Notes / PYQ handling
       if (!req.file && (!driveUrl || driveUrl.trim() === '')) {
         return res.status(400).json({ message: 'Please upload a file OR provide a Google Drive link!' });
       }
@@ -386,7 +392,7 @@ app.post('/api/upload-material', checkDatabaseConnection, verifyToken, verifyAdm
         semester: semester || '1', 
         fileUrl, 
         driveUrl: driveUrl || fileUrl, 
-        fileType,
+        fileType, 
         category: materialCategory
       });
 
@@ -410,7 +416,7 @@ app.get('/api/admin/materials', checkDatabaseConnection, verifyToken, verifyAdmi
   }
 });
 
-// ✏️ Admin Edit/Update Material (NEWLY ADDED FIX)
+// Admin Edit/Update Material
 app.put('/api/admin/edit-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -421,7 +427,6 @@ app.put('/api/admin/edit-material/:id', checkDatabaseConnection, verifyToken, ve
       return res.status(404).json({ message: 'Material record not found!' });
     }
 
-    // Fields Update Logic
     if (title !== undefined) material.title = title.trim();
     if (course !== undefined) material.course = course.toLowerCase();
     if (semester !== undefined) material.semester = semester;
@@ -446,13 +451,13 @@ app.put('/api/admin/edit-material/:id', checkDatabaseConnection, verifyToken, ve
 
     await material.save();
     res.status(200).json({ message: '✅ Material updated successfully!', data: material });
-  } catch (error) {
+  } catch (error) { 
     console.error('Update material error:', error.message);
-    res.status(500).json({ message: 'Server error during material update' });
+    res.status(500).json({ message: 'Server error during material update' }); 
   }
 });
 
-// Admin Delete Material (Path Traversal Hardened)
+// Admin Delete Material
 app.delete('/api/admin/delete-material/:id', checkDatabaseConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const materialId = req.params.id;
@@ -487,9 +492,9 @@ app.get('/api/materials', checkDatabaseConnection, verifyToken, async (req, res)
   try {
     const materials = await Material.find().sort({ uploadedAt: -1 }).limit(30);
     res.json(materials);
-  } catch (error) {
+  } catch (error) { 
     console.error('Dashboard materials fetch error:', error.message);
-    res.status(500).json({ message: 'Error fetching dashboard materials' });
+    res.status(500).json({ message: 'Error fetching dashboard materials' }); 
   }
 });
 
@@ -531,7 +536,7 @@ app.post('/api/admin/logout-all', checkDatabaseConnection, verifyToken, verifyAd
   }
 });
 
-// Student Registration (Hardened)
+// Student Registration
 app.post('/api/register', checkDatabaseConnection, async (req, res) => {
   try {
     const { name, mobile, password, course } = req.body;
@@ -588,7 +593,7 @@ app.post('/api/logout', checkDatabaseConnection, async (req, res) => {
   }
 });
 
-// 🔑 Send OTP for Password Reset
+// Send OTP
 app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     const { mobile } = req.body;
@@ -607,13 +612,13 @@ app.post('/api/send-otp', authLimiter, checkDatabaseConnection, async (req, res)
     }
 
     res.status(200).json({ message: 'OTP sent successfully!' });
-  } catch (error) {
+  } catch (error) { 
     console.error('Send OTP error:', error.message);
-    res.status(500).json({ message: 'Error sending OTP' });
+    res.status(500).json({ message: 'Error sending OTP' }); 
   }
 });
 
-// ✅ Verify OTP & Reset Password
+// Verify OTP & Reset Password
 app.post('/api/verify-otp-reset', authLimiter, checkDatabaseConnection, async (req, res) => {
   try {
     const { mobile, otp, newPassword } = req.body;
@@ -641,9 +646,9 @@ app.post('/api/verify-otp-reset', authLimiter, checkDatabaseConnection, async (r
     }
 
     res.status(200).json({ message: 'Password reset successfully!' });
-  } catch (error) {
+  } catch (error) { 
     console.error('Reset password error:', error.message);
-    res.status(500).json({ message: 'Error resetting password' });
+    res.status(500).json({ message: 'Error resetting password' }); 
   }
 });
 
@@ -657,4 +662,18 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend server successfully running on port ${PORT}!`);
+
+  // 🟢 AUTOMATIC SELF-PING (Runs every 10 minutes to prevent Render sleep mode)
+  const SERVER_URL = process.env.RENDER_EXTERNAL_URL || 'https://bca-35ms.onrender.com';
+  const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+  setInterval(() => {
+    https.get(`${SERVER_URL}/health`, (resp) => {
+      if (resp.statusCode === 200) {
+        console.log(`[Keep-Alive] Self-ping successful at ${new Date().toLocaleTimeString()}`);
+      }
+    }).on('error', (err) => {
+      console.warn('[Keep-Alive] Ping notice:', err.message);
+    });
+  }, PING_INTERVAL);
 });
