@@ -663,9 +663,9 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend server successfully running on port ${PORT}!`);
 
-  // 🟢 AUTOMATIC SELF-PING (Runs every 10 minutes to prevent Render sleep mode)
+  // 🟢 AUTOMATIC SELF-PING (Runs every 5 minutes to prevent Render sleep mode)
   const SERVER_URL = process.env.RENDER_EXTERNAL_URL || 'https://bca-35ms.onrender.com';
-  const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
+  const PING_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
   setInterval(() => {
     https.get(`${SERVER_URL}/health`, (resp) => {
